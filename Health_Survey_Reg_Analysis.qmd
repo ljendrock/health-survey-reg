@@ -1,0 +1,388 @@
+---
+title: "Health Survey Regression Analysis"
+format: html
+editor: visual
+---
+
+------------------------------------------------------------------------
+
+# Project Background
+
+------------------------------------------------------------------------
+
+## Purpose
+
+This project has been adapted from a final project for my Master's degree at Eastern University. 
+
+The purpose of this project is to select a subset of variables from the Behavioral Risk Factor Surveillance System (BRFSS) data collected in 2021 by telephone survey. This system collects data on a state-by-state basis about residents to monitor health-related risk behaviors, health status, and use of preventive care services. This data is provided in a trimmed CSV file, and was not cleaned prior to use in this project.
+
+Selected variables are cleaned, exploratory data analysis is performed, and correlations are examined. Finally, a response variable is selected (number of days of poor mental health) and multiple regression models are created in an attempt to predict a respondent's number of poor mental health days. Throughout the analysis, discussions of data cleaning, transformation and modeling decisions and reasoning are provided.
+
+Comments are provided throughout the code chunks to indicate the purpose of lines of code. Discussions are kept separate to clarify and justify overarching decisions.
+
+Variable names are maintained from the original dataset. While the meanings of variables names are explained in the discussions, the BRFSS Codebook is provided for further clarification if desired.
+
+## Data Source
+
+-   These data come from the [Centers for Disease Control](www.cdc.gov).
+
+------------------------------------------------------------------------
+
+# Analysis
+
+------------------------------------------------------------------------
+
+### Preliminaries
+
+```{r}
+
+### Clear objects from the environment memory:
+rm(list = ls())
+
+### Load relevant libraries:
+library(tidyverse)
+library(lm.beta)
+library(psych)
+
+
+### Load the Data
+### Load the data file
+brf <- read_csv("brfss2021.csv", show_col_types = FALSE)
+```
+
+## Part 1
+
+In this section, the selected variables and their roles in future regression analysis are discussed. Data are cleaned and transformed for easier manipulation, and choices are explained. 
+
+```{r}
+brf_part2 <- brf |>
+  select(MENTHLTH, ADDEPEV3, ALCDAY5, EXERANY2) |> # select the variables of interest for this analysis
+  filter(
+    !MENTHLTH %in% c(77, 99) & !is.na(MENTHLTH), # removing "not sure", refusals, and NA values
+    !ADDEPEV3 %in% c(7, 9) & !is.na(ADDEPEV3), # removing "not sure", refusals, and NA values
+    !ALCDAY5 %in% c(777, 999), # removing "not sure" and refusals
+    !EXERANY2 %in% c(7, 9) & !is.na(EXERANY2) # removing "not sure", refusals, and NA values
+  ) |>
+  mutate(
+    MENTHLTH = ifelse(MENTHLTH == 88, 0, MENTHLTH), # coding "none" as 0
+    ADDEPEV3_fact = factor(ADDEPEV3,
+      levels = c(1, 2), # creating a factor column with labels for easier graphing
+      labels = c("Yes", "No")
+    ),
+    ALCDAY5 = case_when(
+      ALCDAY5 %in% c(101:107) ~ round((ALCDAY5 - 100) * (4.29)), # convert to actual days per week, then scale up to every 30 days
+      ALCDAY5 %in% c(201:230) ~ ALCDAY5 - 200, # convert to total days in 30-day period
+      ALCDAY5 == 888 ~ 0
+    ),
+    EXERANY2_fact = factor(EXERANY2,
+      levels = c(1, 2),
+      labels = c("Yes", "No")
+    )
+  )
+
+remove(brf)
+
+summary(brf_part2$ALCDAY5) # summary statistics of alcohol consumption prior to imputation
+
+alc_pct_na <- sum(is.na(brf_part2$ALCDAY5)) / nrow(brf_part2) # shows the percent of alcoholic beverage responses that are NA
+
+brf_part2 <- brf_part2 |>
+  mutate(ALCDAY5 = ifelse(is.na(ALCDAY5), median(ALCDAY5, na.rm = T), ALCDAY5)) |> # setting NAs to the median of the drinks/month variable
+  arrange(MENTHLTH)
+
+summary(brf_part2$ALCDAY5) # summary statistics after median imputation
+```
+
+### Part 1 Discussion:
+
+The response variable I chose for this analysis is MENTHLTH. This variable measures the number of days in the past 30 days that respondents felt their mental health was not good. I chose this variable because I thought it would be interesting to see the effect of multiple factors indicated in improving mental health, and determine if these factors could be used to predict changes in this variable. 
+
+The predictors I chose are ADDEPEV3 (whether a respondent has ever been diagnosed with a depressive disorder), ALCDAY5 (how many days per week/month respondents have had at least one alcoholic drink), and EXERANY2 (whether respondents have participated in any physical activities or exercise outside of their jobs in the past 30 days). I chose the diagnosis variable because it seems like it should have a strong correlation with mental health, as the symptoms of depressive disorders align with indicators of poor mental health. Reducing alcohol intake and exercising regularly are suggested for improving mental health, so I chose to examine these variables as well. All cleaned data is stored in the brf_part2 object.
+
+While cleaning this data, I decided to remove all instances where respondents refused to answer or responded with "I don't know". There weren't significant numbers of responses of these types (no more than 1.8% of responses for one variable), so I felt it was reasonable to remove these. 
+
+I removed blank rows for MENTHLTH, ADDEPEV3, and EXERANY2. I chose to remove these because there were only 2 or 3 blank responses for each variable. Given how small this subset was, I didn't feel that removing this information would significantly impact a dataset of this size. However, ALCDAY5 contained a large number of blank rows. There were over 24,000 blank rows, which accounts for ~5.5% of the dataset. It would be more sensible to impute the median of the column into these blanks rather than removing a large subset of the data. I checked the summary statistics before and after imputation to ensure that the distribution wasn't changed significantly.
+
+In the MENTHLTH and ALCDAY5 variables, "88" or "888" were originally used in place of a zero to represent a lack of the measured variable. While cleaning the data, I converted these values to 0 in order to work with accurate numeric data while analyzing.
+
+ALCDAY5 was also coded with the hundreds place representing whether values were measured in days or weeks. I removed this demarcation so that the actual number of drinking days could be used, and I changed the values in the "per week" classification. I multiplied this value by 4.29 (approximately 7/30), which scales the number from every 7 days to every 30 days. This provides consistent units and maintains consistency with the other variables that are measured on 30 day timelines. I removed the decimal places and rounded to keep the data discrete.
+
+ADDEPEV3 and EXERANY2 both consist of yes/no answers after cleaning. An answer of "yes" is coded as 1, and an answer of "no" is coded as 2 in both variables. To make this distinction clearer while graphing and have data available as factors for regression, I created two new columns called ADDEPEV3_fact and EXERANY2_fact. These include "Yes" and "No" data labels to make the data more human-readable.
+
+## Part 2
+
+In this part of the analysis, outliers are removed as necessary. Visualizations are provided to show changes in data shape before and after removal, and decisions are explained.
+
+```{r}
+Q12A <- brf_part2 |> # looking at the distribution of observations to choose a removal method for mental health
+  ggplot(aes(x = MENTHLTH)) +
+  geom_boxplot() +
+  xlab("Days of Poor Mental Health in Past 30 Days")
+Q12A
+
+menthlth_upper <- quantile(brf_part2$MENTHLTH, 0.75) + (1.5 * IQR(brf_part2$MENTHLTH)) # creating the upper fence for the 1.5IQR rule
+
+brf_part2 <- brf_part2 |>
+  filter(MENTHLTH <= menthlth_upper) # removing any outliers beyond 1.5IQR on the upper end of the dataset
+```
+
+```{r}
+Q12B <- brf_part2 |> # looking at the distribution following removal of mental health outliers
+  ggplot(aes(x = MENTHLTH)) +
+  geom_boxplot() +
+  xlab("Days of Poor Mental Health in Past 30 Days")
+Q12B
+```
+
+```{r}
+Q12C <- brf_part2 |> # looking at the distribution of observations to choose a removal method for alcohol consumption
+  ggplot(aes(x = ALCDAY5)) +
+  geom_boxplot() +
+  xlab("Days of Alcohol Consumption in Past 30 Days")
+Q12C
+
+alc_upper <- quantile(brf_part2$ALCDAY5, 0.75) + (1.5 * IQR(brf_part2$ALCDAY5)) # creating the upper fence for the 1.5IQR rule
+
+brf_part2 <- brf_part2 |> # removing any outliers beyond 1.5IQR on the upper end of the dataset
+  filter(ALCDAY5 <= alc_upper)
+```
+
+```{r}
+Q12D <- brf_part2 |> # looking at the distribution of observations following outlier removal
+  ggplot(aes(x = ALCDAY5)) +
+  geom_boxplot()
+xlab("Days of Alcohol Consumption in Past 30 Days")
+Q12D
+```
+
+### Part 2 Discussion:
+
+I chose to remove outliers in the MENTHLTH and ALCDAY5 variables. These variables are numeric and contain outliers (shown in boxplots in Q12A and Q12C), so trimming the datasets could improve results of statistical analyses and regression models.
+
+I chose to use the 1.5IQR Rule because the distributions of both sets of observations were non-normal and showed prominent right skews. Given that there were no outliers on the low end of the datasets, I only created upper fences for each variable.
+
+Q12A and Q12C show the distribution of MENTHLTH and ALCDAY5, respectively, prior to removing outliers. Q12B and Q12D show the boxplots after removal to demonstrate the changes in the variables.
+
+## Part 3
+
+In this part, exploratory data analyses are performed. Visualizations are created using various combinations of the variables of interest. Discussions of results are provided in an organized format by chart at the bottom.
+
+```{r}
+Q13A <- brf_part2 |> # univariate graph of mental health days
+  ggplot(aes(x = MENTHLTH)) +
+  geom_bar() +
+  labs(
+    x = "Days of Poor Mental Health in Past 30 Days",
+    y = "Count",
+    title = "Mental Health in Respondents"
+  ) +
+  scale_x_continuous(breaks = seq(0, 10, by = 2))
+
+Q13A
+```
+
+```{r}
+options(scipen = 100000) # removing scientific notation in y-axis
+Q13B <- brf_part2 |> # univariate graph of depressive disorder diagnosis status
+  ggplot(aes(x = ADDEPEV3_fact)) +
+  geom_bar() +
+  labs(
+    x = "Diagnosis of Depressive Disorder",
+    y = "Count",
+    title = "Depressive Disorders in Respondents"
+  )
+
+Q13B
+```
+
+```{r}
+Q13C <- brf_part2 |> # depressive disorders and mental health
+  ggplot(aes(x = MENTHLTH, fill = ADDEPEV3_fact)) +
+  geom_bar(position = "fill") +
+  labs(
+    x = "Days of Poor Mental Health in Past 30 Days", y = "Proportion",
+    title = "Effect of Depressive Disorders on Mental Health",
+    fill = "Depressive Disorder Diagnosis"
+  ) +
+  scale_x_continuous(breaks = seq(0, 10, by = 2))
+Q13C
+```
+
+```{r}
+options(scipen = 100000) # removing scientific notation in y-axis
+Q13D <- brf_part2 |> # univariate graph of whether respondents have exercised
+  ggplot(aes(x = EXERANY2_fact)) +
+  geom_bar() +
+  labs(
+    x = "Exercise in Past 30 Days",
+    y = "Count",
+    title = "Recreational Exercise in Respondents"
+  )
+
+Q13D
+```
+
+```{r}
+Q13E <- brf_part2 |> # exercise and mental health
+  ggplot(aes(x = MENTHLTH, fill = EXERANY2_fact)) +
+  geom_bar(position = "fill") +
+  labs(
+    x = "Days of Poor Mental Health in Past 30 Days", y = "Proportion",
+    title = "Effect of Exercise on Mental Health",
+    fill = "Exercised in Last 30 Days"
+  ) +
+  scale_x_continuous(breaks = seq(0, 10, by = 2))
+Q13E
+```
+
+```{r}
+Q13F <- brf_part2 |> # alcohol use in respondents in past 30 days
+  ggplot(aes(x = ALCDAY5)) +
+  geom_bar() +
+  labs(
+    x = "Days of Alcohol Use in Past 30 Days",
+    y = "Count",
+    title = "Alcohol Use in Sample Population"
+  ) +
+  scale_x_continuous(breaks = seq(0, 12, by = 2))
+Q13F
+```
+
+### Part 3 Discussion:
+
+Q13A: The first graph is a bar graph of days respondents experienced poor mental health. The majority of respondents did not experience poor mental health in the past 30 days, and observation counts varied beyond this. There was fluctuation in values in the other count categories, and a slight increase in responses at 10 days of poor mental health. 
+
+Q13B: The second univariate graph explores whether respondents had a diagnosis of a depressive disorder. As this variable is binary, there are only two outcomes shown. This graph shows that significantly more respondents did not have a depressive disorder, but there were a notable number of affirmative observations.
+
+Q13C: The first bivariate graph explores the relationship between number of days of poor mental health and diagnosis with a depressive disorder. I chose to use a stacked bar chart to examine the proportion of respondents who had or didn't have a diagnosis across mental health responses. I chose the stacked bar chart because the responses regarding days of poor mental health were stored as discrete data. It was easiest to see the relationship between these two variables in this format, and stacked bar charts showed patterns in the data more clearly than a multi-bar graph. 
+
+There is a clear trend in proportion of respondents with a depressive disorder diagnosis increasing as days of poor mental health increases. This is a logical connection, as depressive disorders have symptoms that match the examples of poor mental health given in the MENTHLTH question ("Now thinking about your mental health, which includes stress, depression, and problems with emotions..."). Given the clear trend present in this graph, I assume that ADDEPEV3 will improve a regression model.
+
+Q13D: The third univariate graph shows whether respondents had exercised in the past 30 days. This chart shows that approximately three-quarters of respondents had exercised recently outside of work, providing far more affirmative observations than negative observations.
+
+Q13E: This stacked bar chart shows the relationship between days of poor mental health and whether respondents had exercised in the past 30 days. The chart type was selected for the same reasons as Q13A. This chart does not show the same strong trend as Q13A, but there does appear to be a slight, non-linear increase in proportion of non-exercisers as number of poor mental health days increases. This could indicate that not exercising may have some relationship with poor mental health, but it is likely weak. While this could improve a regression model, it is unlikely to have a strong impact on the model.
+
+Q13F: I examined the responses regarding days of alcohol consumption on their own using a bar chart. This showed the large difference in responses near 0 and all other answers, which makes examining graphs with this data difficult. There is some fluctuation in counts of respondents as days of consumption increase, with few responses in the two highest bars. The number of respondents roughly tends to decrease as consumption increases.
+
+## Part 4
+
+Basic descriptive statistics are performed for the variables of interest. A correlation between these variables is also provided following the descriptive statistics. The outputs are discussion below, along with their expected levels of significance.
+
+```{r}
+MENT_summ <- brf_part2 |>
+  select(MENTHLTH) |>
+  summarise(
+    Min = min(MENTHLTH),
+    "1st Q" = quantile(MENTHLTH, 0.25),
+    Median = median(MENTHLTH),
+    Mean = round(mean(MENTHLTH), 2),
+    "3rd Q" = quantile(MENTHLTH, 0.75),
+    Max = max(MENTHLTH),
+    SD = round(sd(MENTHLTH), 2),
+    Variance = round(var(MENTHLTH), 2),
+    SE = round(SD / sqrt(nrow(brf_part2)), 4)
+  )
+
+ADDEPEV_summ <- brf_part2 |>
+  select(ADDEPEV3) |>
+  group_by(ADDEPEV3) |>
+  summarise(
+    Count = n(),
+    Percent = round(n() / nrow(brf_part2) * 100, 1)
+  )
+
+ALC_summ <- brf_part2 |>
+  select(ALCDAY5) |>
+  summarise(
+    Min = min(ALCDAY5),
+    "1st Q" = quantile(ALCDAY5, 0.25),
+    Median = median(ALCDAY5),
+    Mean = round(mean(ALCDAY5), 2),
+    "3rd Q" = quantile(ALCDAY5, 0.75),
+    Max = max(ALCDAY5),
+    SD = round(sd(ALCDAY5), 2),
+    Variance = round(var(ALCDAY5), 2),
+    SE = round(SD / sqrt(nrow(brf_part2)), 4)
+  )
+
+EXERANY_summ <- brf_part2 |>
+  select(EXERANY2) |>
+  group_by(EXERANY2) |>
+  summarise(
+    Count = n(),
+    Percent = round(n() / nrow(brf_part2) * 100, 1)
+  )
+
+
+corr_brf <- round(cor(brf_part2[, c("MENTHLTH", "ADDEPEV3", "ALCDAY5", "EXERANY2")]), 2) # correlation between all variables
+
+MENT_summ
+ADDEPEV_summ
+ALC_summ
+EXERANY_summ
+corr_brf
+```
+
+### Part 4 Discussion:
+I ran the basic descriptive statistics for the four variables of interest, and I also created a correlation matrix of the four values. Summary statistics are given using a summary object for each variable. I calculated the five-number summary, arithmetic mean, standard deviation, variance, and standard error for numeric variables. I calculated the count and percent of total responses for each response in the binary variables.
+
+MENT_summ: The statistics for the poor mental health variable showed that half the data indicates respondents had 0 days of poor mental health in the past 30 days. The minimum, first quartile and median are all 0. The mean, however, is slightly higher than 1 and higher than the third quartile. This indicates that there are multiple higher values pulling this statistic up. The higher mean confirms that the data is right-skewed when analyzed alongside the boxplots from Q12. The standard deviation showed that 67% of responses fall within 2.48 days of the mean, which indicates that approximately 2/3 of responses are below 4 days of poor mental health. This seems to indicate that the data is moderately spread out. The standard error for this dataset is very low, indicating that the large number of data points in this set likely brings the sample mean close to the population mean.
+
+ADDEPEV_summ: For the depressive disorder diagnosis variable, I used the factor column to calculate summary statistics. The coded 1 and 2 for "yes" and "no", respectively, would not provide any quantitatively relevant information. This provided counts for "Yes" and "No" answers. To supplement the counts, I created the object dep_pct which gives the percentages of yes and no answers. This showed that 13.8% of respondents said that they had a diagnosis of a depressive disorder.
+
+ALCDAY5: The statistics for days of alcohol use showed statistics that were similar to the mental health variable. At least half of respondents answered that they had not consumed alcohol in the past 30 days, while the mean showed a higher value of roughly 1.8 days. However, this was lower than the third quartile value. This shows that the consumption data is still right-skewed, but less so than the mental health data. The standard deviation for this variable indicates that approximately 2/3 of responses fall below 6 days of alcohol consumption in a 30 day period, indicating a moderate spread in this dataset. The standard error is low as well, so we can assume that the sample mean is close to the population mean.
+
+EXERANY2_fact: the descriptive statistics were shown in the same manner for exercise as they were for depressive disorder diagnosis. I also calculated the percentages of answers for exercise, which is stored as the object exer_pct. The percentage calculation shows that 76.2% of respondents had exercised outside of their regular jobs in the past 30 days.
+
+Correlation: In addition to descriptive statistics, I created a correlation matrix for the data. The matrix was stored as corr_brf. The most significant correlation appeared between mental health and depressive disorder diagnosis. The correlation coefficient produced showed a weak negative correlation between these variables. This means that as diagnosis status changes from "yes" to "no", the number of poor mental health days tends to decrease. This logically makes sense, and indicates that this variable will likely be the most critical of the three predictor variables in the regression model. 
+
+There is a negative correlation between exercise and mental health, but it is very weak (-0.01). This indicates that exercise status changing from "yes" to "no" largely has little to no impact on mental health. 
+
+There is a slight positive correlation between alcohol consumption and mental health, but it is also weak. Increasing alcohol consumption likely has little to no impact on number of days of poor mental health.
+
+There were no strong correlations between any of the predictor variables, which is an encouraging indication that none of the predictors will duplicate information.
+
+
+## Part 5
+
+In the final part of this analysis, three regression models were created to predict number of days of poor mental health. Models were created using increasing numbers of predictor variables in order of their correlation to the response variable, as calculated in the prior section. Explanation of the model results, along with their significance, is provided in the discussion.
+
+```{r}
+brf_mod1 <- lm(MENTHLTH ~ ADDEPEV3_fact, data = brf_part2) # the first model only uses depressive disorder diagnosis as a predictor
+summary(brf_mod1)
+
+
+brf_mod2 <- lm(MENTHLTH ~ ADDEPEV3_fact + ALCDAY5, data = brf_part2) # the second model uses diagnosis and alcohol use as predictors
+summary(brf_mod2)
+
+brf_mod3 <- lm(MENTHLTH ~ ADDEPEV3_fact + ALCDAY5 + EXERANY2_fact, data = brf_part2) # the third model uses all three predictors
+summary(brf_mod3)
+```
+
+```{r}
+### Do not edit the following line. It is used by CodeGrade.
+# CG Q15A #
+
+### TYPE YOUR CODE BELOW ###
+mod1_aic <- AIC(brf_mod1)
+mod2_aic <- AIC(brf_mod2)
+mod3_aic <- AIC(brf_mod3)
+
+as.tibble(c(mod1_aic, mod2_aic, mod3_aic))
+```
+
+### Part 5 Discussion:
+
+Three linear regression models were created to attempt to predict days of poor mental health. 
+
+brf_mod1: The first model only used a depressive disorder diagnosis as the predictor variable. The coefficient indicates that a change from having a depressive disorder diagnosis to no diagnosis tends to decrease days of poor mental health by ~2.07 days. This variable is statistically significant with a small p-value, but the adjusted R-squared value is very low. This indicates that this model is likely not very accurate.
+
+brf_mod2: The second model uses the two most highly-correlated predictors: depressive disorder diagnosis and days of alcohol consumption. The coefficient for diagnosis decreased slightly, but is very similar to the first model. The coefficient for alcohol consumption shows that as alcohol use increases by 1 day every 30 days, days of poor mental health increases by ~ 0.05 days. This is not a strong effect on the response variable. 
+
+Both variables in this model are statistically significant with small p-values. The adjusted R-squared value for this model is slightly higher than the first model, but it is still very low.
+
+brf_mod3: The final model uses all three predictor variables. the coefficients for diagnosis and alcohol consumption are similar to those in the second model. The coefficient for exercise indicates that a change from not exercising to exercising tends to decrease days of poor mental health by ~0.1 days. Like alcohol consumption, this shows a mild impact on the response variable.
+
+All three variables are statistically significant in this model, and all of the p-values are very small. This model has the highest adjusted R-squared value of the three options but, once again, it is only slightly higher and very low.
+
+As a final comparison of the models, I calculated the AIC for each model and compiled them into a table. In addition to the highest adjust R-squared value, the third model containing all three predictors had the lowest AIC. With this information, the model using all three predictors seems to be the best model of the group. However, this model needs more work to provide accurate predictions for number of days of poor mental health. Exploring and adding further variables with a greater correlation to the response variable may lead to a better model.
